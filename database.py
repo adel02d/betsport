@@ -2,19 +2,15 @@ import sqlite3
 import os
 from datetime import datetime
 
-# CONFIGURACIÓN DE RUTAS PARA RENDER Y LOCAL
-# Render usa un disco persistente en esta ruta específica
+# CONFIGURACIÓN DE LA BASE DE DATOS
 if os.environ.get('RENDER'):
+    # Ruta para el disco persistente en Render
     BASE_DIR = "/opt/render/project/data"
-    os.makedirs(BASE_DIR, exist_ok=True) # Asegurar que la carpeta existe
+    os.makedirs(BASE_DIR, exist_ok=True)
     DB_NAME = os.path.join(BASE_DIR, "casa_apuestas.db")
-    UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 else:
-    # Para pruebas locales si algún día las hicieras
+    # Ruta local
     DB_NAME = "casa_apuestas.db"
-    UPLOAD_DIR = "uploads"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME)
@@ -37,6 +33,8 @@ def init_db():
     ''')
     
     # Tabla Transacciones
+    # Nota: photo_path ya no se usará para guardar archivos en disco, 
+    # pero la dejamos en la DB por si quieres guardar un ID o referencia futura.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +43,6 @@ def init_db():
             amount REAL,
             status TEXT DEFAULT 'PENDING',
             account_info TEXT,
-            photo_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -84,6 +81,7 @@ def register_or_update_user(user_id, username, first_name):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)', (user_id, username, first_name))
+    # Actualizar datos si el usuario ya existe
     cursor.execute('UPDATE users SET username=?, first_name=? WHERE user_id=?', (username, first_name, user_id))
     conn.commit()
     conn.close()
@@ -107,8 +105,9 @@ def update_user_balance(user_id, amount):
 def create_transaction(user_id, t_type, amount, account_info=None, photo_path=None):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO transactions (user_id, type, amount, account_info, photo_path) VALUES (?, ?, ?, ?, ?)', 
-                   (user_id, t_type, amount, account_info, photo_path))
+    # Pasamos photo_path como None ya que no guardamos archivo
+    cursor.execute('INSERT INTO transactions (user_id, type, amount, account_info) VALUES (?, ?, ?, ?)', 
+                   (user_id, t_type, amount, account_info))
     conn.commit()
     trans_id = cursor.lastrowid
     conn.close()
@@ -162,5 +161,5 @@ def place_bet(user_id, event_id, selection, odds, amount, potential_win):
     finally:
         conn.close()
 
-# Inicializar DB al importar
+# Inicializar DB
 init_db()
