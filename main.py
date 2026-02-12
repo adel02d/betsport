@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -7,6 +8,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
 from dotenv import load_dotenv
+from aiohttp import web # Importación necesaria para el servidor web
 import database as db
 
 # CARGAR CONFIGURACIÓN
@@ -30,6 +32,50 @@ def get_main_keyboard():
         [InlineKeyboardButton("💸 Retirar", callback_data='withdraw_start')],
         [InlineKeyboardButton("📊 Mi Saldo", callback_data='my_balance')]
     ]
+
+# --- MANEJO DE FOTOS (DEPÓSITOS) ---
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # Obtener la foto más grande que envió el usuario
+    photo_obj = update.message.photo[-1]
+    
+    # Obtener el File ID de Telegram
+    file_id = photo_obj.file_id
+    
+    # Crear la transacción en la base de datos
+    trans_id = db.create_transaction(user_id, 'DEPOSIT', 0, photo_path=None)
+    
+    # Reenviar la foto directamente al Administrador usando el File ID
+    caption = (
+        f"🔔 **NUEVO DEPÓSITO**\n"
+        f"👤 Usuario: {update.effective_user.first_name} (@{update.effective_user.username})\n"
+        f"🆔 ID Transacción: {trans_id}\n\n"
+        f"Verifica el monto en la imagen y apruébalo."
+    )
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            # Enviamos la foto usando su ID interno (sin descargar ni guardar en servidor)
+            await context.bot.send_photo(
+                chat_id=admin_id, 
+                photo=file_id, 
+                caption=caption, 
+                parse_mode='Markdown'
+            )
+            # Enviamos instrucciones de comando al admin
+            await context.bot.send_message(
+                chat_id=admin_id, 
+                text=f"Para acreditar saldo, usa:\n`/aprobar {trans_id} <MONTO_VISTO>`", 
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            print(f"Error enviando foto al admin {admin_id}: {e}")
+
+    # Avisar al usuario
+    await update.message.reply_text("📸 Comprobante recibido. Enviado al administrador para validación.")
+    return ConversationHandler.END
 
 # --- HANDLERS PRINCIPALES ---
 
@@ -171,52 +217,6 @@ async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Solicitud de retiro enviada. Espera aprobación del administrador.")
         return ConversationHandler.END
 
-# --- MANEJO DE FOTOS (DEPÓSITOS) - CAMBIO PRINCIPAL ---
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # 1. Obtener el objeto de la foto (la más grande/resolución)
-    photo_obj = update.message.photo[-1]
-    
-    # 2. Obtener el File ID de Telegram
-    # ESTO ES LO CLAVE: No descargamos el archivo. Usamos el ID que nos da Telegram.
-    file_id = photo_obj.file_id
-    
-    # 3. Crear la transacción en la base de datos
-    # No guardamos ruta de archivo (None) porque no la guardamos en disco.
-    trans_id = db.create_transaction(user_id, 'DEPOSIT', 0, photo_path=None)
-    
-    # 4. Reenviar la foto directamente al Administrador usando el File ID
-    caption = (
-        f"🔔 **NUEVO DEPÓSITO**\n"
-        f"👤 Usuario: {update.effective_user.first_name} (@{update.effective_user.username})\n"
-        f"🆔 ID Transacción: {trans_id}\n\n"
-        f"Verifica el monto en la imagen y apruébalo."
-    )
-    
-    for admin_id in ADMIN_IDS:
-        try:
-            # Enviamos la foto usando su ID interno (sin descargar ni guardar en servidor)
-            await context.bot.send_photo(
-                chat_id=admin_id, 
-                photo=file_id, 
-                caption=caption, 
-                parse_mode='Markdown'
-            )
-            # Enviamos instrucciones de comando al admin
-            await context.bot.send_message(
-                chat_id=admin_id, 
-                text=f"Para acreditar saldo, usa:\n`/aprobar {trans_id} <MONTO_VISTO>`", 
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            print(f"Error enviando foto al admin {admin_id}: {e}")
-
-    # 5. Confirmar al usuario
-    await update.message.reply_text("📸 Comprobante recibido. Enviado al administrador para validación.")
-    return ConversationHandler.END
-
 # --- COMANDOS DE ADMINISTRADOR ---
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -316,8 +316,27 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error procesando solicitud: {e}")
 
+# --- SERVIDOR WEB (Para mantener el bot vivo en Render Free) ---
+
+async def handle_health(request):
+    """Responde 'OK' cuando Render hace ping al puerto para ver si está vivo."""
+    return web.Response(text="Bot is alive")
+
+async def run_web_server(app):
+    """Inicia el servidor web en segundo plano."""
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render expone el puerto a través de la variable de entorno PORT, por defecto 10000
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Web server started on port {port}")
+
+# --- FUNCIÓN PRINCIPAL ---
+
 def main():
-    app = Application.builder().token(TOKEN).build()
+    # 1. Inicializar el Bot de Telegram
+    application = Application.builder().token(TOKEN).build()
 
     # Registrar Comandos
     app.add_handler(CommandHandler("start", start))
@@ -334,7 +353,7 @@ def main():
         states={
             UPLOAD_PHOTO: [MessageHandler(filters.PHOTO, handle_photo)]
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
     )
     app.add_handler(dep_handler)
 
@@ -344,7 +363,7 @@ def main():
         states={
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount)]
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
     )
     app.add_handler(bet_handler)
 
@@ -354,12 +373,23 @@ def main():
         states={
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount)]
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
     )
     app.add_handler(wit_handler)
 
-    print("Bot iniciado y listo para apostar...")
-    app.run_polling()
+    print("Iniciando Bot y Servidor Web...")
+
+    # 2. Configurar el Servidor Web (Para Render)
+    web_app = web.Application()
+    web_app.add_routes([web.get('/', handle_health)])
+
+    # 3. Ejecutar ambos al mismo tiempo
+    # Usamos el loop de eventos para correr el servidor web en background
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_web_server(web_app))
+    
+    # Iniciar el bot (esto bloquea el hilo principal, manteniendo el proceso activo)
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
