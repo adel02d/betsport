@@ -1,11 +1,11 @@
 #!/bin/bash
-# Intentar forzar el uso de python3.11 si está disponible en el sistema, 
-# o usar el alias de python predeterminado si Render no lo ha sobreescrito correctamente.
-if command -v python3.11 &> /dev/null; then
-    echo "Forzando uso de Python 3.11..."
-    python3.11 -m pip install -r requirements.txt
-    python3.11 main.py
-else
-    echo "Python 3.11 no encontrado en path, intentando fallback..."
-    python main.py
-fi
+
+echo "Iniciando configuración forzada para Python 3.11..."
+
+# 1. Forzar la instalación de librerías usando Python 3.11
+# Usamos --break-system-packages porque en Render el entorno 3.11 es gestionado por el sistema
+python3.11 -m pip install -r requirements.txt --break-system-packages
+
+# 2. Ejecutar el bot principal usando Python 3.11
+echo "Ejecutando bot con Python 3.11..."
+python3.11 main.py
