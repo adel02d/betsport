@@ -338,16 +338,17 @@ def main():
     # 1. Inicializar el Bot de Telegram
     application = Application.builder().token(TOKEN).build()
 
-    # Registrar Comandos
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CommandHandler("crear_evento", cmd_create_event))
-    app.add_handler(CommandHandler("aprobar", cmd_approve))
+    # Registrar todos los Handlers
+    # --- Comandos ---
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", cmd_admin))
+    application.add_handler(CommandHandler("crear_evento", cmd_create_event))
+    application.add_handler(CommandHandler("aprobar", cmd_approve))
 
-    # Registrar Botones del Menú
-    app.add_handler(CallbackQueryHandler(button_handler))
+    # --- Botones del Menú ---
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Conversación Depósito (Manejo de FOTO)
+    # --- Conversación Depósito (Manejo de FOTO) ---
     dep_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern='^deposit_start$')],
         states={
@@ -355,9 +356,9 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
     )
-    app.add_handler(dep_handler)
+    application.add_handler(dep_handler)
 
-    # Conversación Apuestas (Manejo de MONTO)
+    # --- Conversación Apuestas (Manejo de MONTO) ---
     bet_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern='^bet_')],
         states={
@@ -365,9 +366,9 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
     )
-    app.add_handler(bet_handler)
+    application.add_handler(bet_handler)
 
-    # Conversación Retiro (Manejo de MONTO)
+    # --- Conversación Retiro (Manejo de MONTO) ---
     wit_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern='^withdraw_start$')],
         states={
@@ -375,7 +376,7 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado.") or ConversationHandler.END)]
     )
-    app.add_handler(wit_handler)
+    application.add_handler(wit_handler)
 
     print("Iniciando Bot y Servidor Web...")
 
