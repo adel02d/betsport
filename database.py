@@ -4,12 +4,10 @@ from datetime import datetime
 
 # CONFIGURACIÓN DE LA BASE DE DATOS
 if os.environ.get('RENDER'):
-    # Ruta para el disco persistente en Render
     BASE_DIR = "/opt/render/project/data"
     os.makedirs(BASE_DIR, exist_ok=True)
     DB_NAME = os.path.join(BASE_DIR, "casa_apuestas.db")
 else:
-    # Ruta local
     DB_NAME = "casa_apuestas.db"
 
 def get_db_connection():
@@ -33,8 +31,6 @@ def init_db():
     ''')
     
     # Tabla Transacciones
-    # Nota: photo_path ya no se usará para guardar archivos en disco, 
-    # pero la dejamos en la DB por si quieres guardar un ID o referencia futura.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +43,7 @@ def init_db():
         )
     ''')
     
-    # Tabla Eventos
+    # Tabla Eventos (Con IDs de API)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,11 +51,14 @@ def init_db():
             odds_local REAL,
             odds_draw REAL,
             odds_away REAL,
-            is_active BOOLEAN DEFAULT 1
+            is_active BOOLEAN DEFAULT 1,
+            api_event_id TEXT,
+            event_date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # Tabla Apuestas
+    # Tabla Apuestas (Soporta Simples y Combinadas)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,7 +68,10 @@ def init_db():
             odds REAL,
             amount REAL,
             potential_win REAL,
-            status TEXT DEFAULT 'PENDING'
+            is_combo BOOLEAN DEFAULT 0,
+            combo_details TEXT,
+            status TEXT DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -81,7 +83,6 @@ def register_or_update_user(user_id, username, first_name):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)', (user_id, username, first_name))
-    # Actualizar datos si el usuario ya existe
     cursor.execute('UPDATE users SET username=?, first_name=? WHERE user_id=?', (username, first_name, user_id))
     conn.commit()
     conn.close()
@@ -102,10 +103,9 @@ def update_user_balance(user_id, amount):
     conn.close()
 
 # --- FUNCIONES DE TRANSACCIONES ---
-def create_transaction(user_id, t_type, amount, account_info=None, photo_path=None):
+def create_transaction(user_id, t_type, amount, account_info=None):
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Pasamos photo_path como None ya que no guardamos archivo
     cursor.execute('INSERT INTO transactions (user_id, type, amount, account_info) VALUES (?, ?, ?, ?)', 
                    (user_id, t_type, amount, account_info))
     conn.commit()
@@ -129,13 +129,23 @@ def get_transaction(trans_id):
     return dict(row) if row else None
 
 # --- FUNCIONES DE EVENTOS Y APUESTAS ---
-def create_event(name, o_local, o_draw, o_away):
+def create_event_auto(name, o_local, o_draw, o_away, api_id, date_str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO events (name, odds_local, odds_draw, odds_away) VALUES (?, ?, ?, ?)', 
-                   (name, o_local, o_draw, o_away))
+    cursor.execute('''
+        INSERT INTO events (name, odds_local, odds_draw, odds_away, api_event_id, event_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (name, o_local, o_draw, o_away, api_id, date_str))
     conn.commit()
     conn.close()
+
+def get_event_by_api_id(api_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM events WHERE api_event_id = ?', (api_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 def get_active_events():
     conn = get_db_connection()
@@ -156,10 +166,25 @@ def place_bet(user_id, event_id, selection, odds, amount, potential_win):
         return True
     except Exception as e:
         conn.rollback()
-        print(f"Error placing bet: {e}")
+        print(f"Error apuesta: {e}")
         return False
     finally:
         conn.close()
+
+def get_bets_by_user(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM bets WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def deactivate_event(event_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE events SET is_active = 0 WHERE id = ?', (event_id,))
+    conn.commit()
+    conn.close()
 
 # Inicializar DB
 init_db()
