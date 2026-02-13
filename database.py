@@ -43,7 +43,7 @@ def init_db():
         )
     ''')
     
-    # Tabla Eventos (Con IDs de API)
+    # Tabla Eventos
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +58,7 @@ def init_db():
         )
     ''')
     
-    # Tabla Apuestas (Soporta Simples y Combinadas)
+    # Tabla Apuestas
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +147,15 @@ def get_event_by_api_id(api_id):
     conn.close()
     return dict(row) if row else None
 
+def get_all_events():
+    """Admin: Ver todos los eventos"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM events ORDER BY created_at DESC')
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
 def get_active_events():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -154,6 +163,13 @@ def get_active_events():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+def update_event_odds(event_id, o1, ox, o2):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE events SET odds_local=?, odds_draw=?, odds_away=? WHERE id=?', (o1, ox, o2, event_id))
+    conn.commit()
+    conn.close()
 
 def place_bet(user_id, event_id, selection, odds, amount, potential_win):
     conn = get_db_connection()
