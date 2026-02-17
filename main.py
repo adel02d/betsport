@@ -41,9 +41,11 @@ def is_admin(user_id):
 
 def get_main_keyboard():
     keyboard = []
+    # Botones de Ligas
     for name in LEAGUES.keys():
         keyboard.append([InlineKeyboardButton(f"⚽ {name}", callback_data=f'league_{name}')])
     
+    # Botones de Funciones
     row1 = [InlineKeyboardButton("🎰 Apuesta Combinada", callback_data='start_combo')]
     row2 = [InlineKeyboardButton("💳 Depositar", callback_data='deposit_start')]
     row3 = [InlineKeyboardButton("💸 Retirar", callback_data='withdraw_start')]
@@ -51,6 +53,8 @@ def get_main_keyboard():
     row5 = [InlineKeyboardButton("💰 Mi Saldo", callback_data='my_balance')]
     
     keyboard.extend([row1, row2, row3, row4, row5])
+    
+    # Botón de Admin (Si es admin)
     return keyboard
 
 # --- API ODDS ---
@@ -83,7 +87,7 @@ def fetch_scores_api():
 # --- CRON JOBS ---
 
 async def sync_events_job(context: ContextTypes.DEFAULT_TYPE):
-    logging.info("🔄 Sincronizando eventos...")
+    logging.info("🔄 Sincronizando eventos (Cada 2 horas)...")
     for league_name, sport_key in LEAGUES.items():
         fixtures = fetch_odds_api(sport_key)
         for fix in fixtures:
@@ -154,7 +158,13 @@ async def auto_payouts_job(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.register_or_update_user(user.id, user.username, user.first_name)
-    await update.message.reply_text(f"👋 Hola {user.first_name}.", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
+    
+    # Si es admin, añadimos botón de panel
+    keyboard = get_main_keyboard()
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("⚙️ Panel Admin", callback_data='admin_panel_btn')])
+        
+    await update.message.reply_text(f"👋 Hola {user.first_name}.", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -162,7 +172,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
 
-    if data.startswith('league_'):
+    # NAVEGACIÓN
+    if data == 'admin_panel_btn':
+        await cmd_admin_panel(update, context)
+    elif data == 'back_to_admin':
+        await cmd_admin_panel(update, context)
+    elif data == 'back_menu':
+        # Recargar menú con botón admin si corresponde
+        keyboard = get_main_keyboard()
+        if is_admin(user_id): keyboard.append([InlineKeyboardButton("⚙️ Panel Admin", callback_data='admin_panel_btn')])
+        await query.edit_message_text("Menú Principal", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # LIGAS
+    elif data.startswith('league_'):
         league_name = data.split('_')[1]
         fixtures = fetch_odds_api(LEAGUES[league_name])
         if not fixtures:
@@ -175,7 +197,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             api_id = str(fix['id'])
             home = fix.get('home_team'); away = fix.get('away_team')
             
-            # Extraer cuotas
             o1, ox, o2 = 2.0, 3.0, 3.5
             bookmakers = fix.get('bookmakers', [])
             if bookmakers:
@@ -198,20 +219,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("⬅️ Menú", callback_data='back_menu')])
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
+    # APUESTAS SIMPLES
     elif data.startswith('select_'):
         parts = data.split('_')
         api_id, selection, odds = parts[1], parts[2], float(parts[3])
         event = db.get_event_by_api_id(api_id)
         if not event: return
-
         context.user_data['pending_bet'] = {'event_id': event['id'], 'name': event['name'], 'selection': selection, 'odds': odds}
         await query.edit_message_text(f"{selection.upper()} en {event['name']}\nCuota: {odds}\n\nMonto:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data='cancel_bet')]]))
         return AMOUNT
 
+    # COMBINADAS
     elif data == 'start_combo':
         if 'combo_bets' not in context.user_data: context.user_data['combo_bets'] = []
         await show_leagues_for_combo(update, context)
-
     elif data.startswith('c_league_'):
         league_name = data.split('_', 2)[2]
         fixtures = fetch_odds_api(LEAGUES[league_name])
@@ -240,7 +261,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data='start_combo')])
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif data.startswith('c_add_'):
         parts = data.split('_')
         api_id, selection, odds = parts[2], parts[3], float(parts[4])
@@ -249,23 +269,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['combo_bets'].append({'id': event['id'], 'name': event['name'], 'selection': selection, 'odds': odds})
         await query.answer("Añadido")
         await show_combo_cart(update, context)
-
     elif data == 'c_finish':
         if not context.user_data.get('combo_bets'): return
         await query.edit_message_text("Combinada lista.\nMonto:")
         return AMOUNT
-
     elif data == 'c_cancel':
         del context.user_data['combo_bets']
         await query.edit_message_text("Cancelado.", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
 
-    elif data == 'back_menu':
-        await query.edit_message_text("Menú Principal", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
-
+    # OTROS
     elif data == 'my_balance':
         bal = db.get_user_balance(user_id)
         await query.edit_message_text(f"💰 Saldo: ${bal}", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
-
     elif data == 'my_bets':
         bets = db.get_bets_by_user(user_id)
         if not bets: await query.edit_message_text("Sin apuestas.", reply_markup=InlineKeyboardMarkup(get_main_keyboard())); return
@@ -276,16 +291,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"{status} ${b['amount']} -> ${b['potential_win']:.2f}{combo}\n"
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
 
-    # --- ADMIN PANEL HANDLERS ---
-    elif data == 'back_to_admin':
-        await cmd_admin_panel(update, context)
+    # ADMIN HANDLERS
     elif data == 'admin_list_events':
         await admin_list_events(update, context)
     elif data == 'admin_sync_now':
         await query.answer("Forzando sincronización...")
         await sync_events_job(context)
         await query.edit_message_text("✅ Sincronización completada.")
+    elif data == 'admin_edit_start':
+        await admin_edit_start_flow(update, context)
 
+# --- AYUDAS COMBO ---
 async def show_leagues_for_combo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     keyboard = []
@@ -373,6 +389,11 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 # --- DEPÓSITOS Y RETIROS ---
+
+async def deposit_start(update, context):
+    await update.message.reply_text(f"💳 **Datos Bancarios:**\n\n{BANK_DETAILS}\n\nEnvía captura.", parse_mode='Markdown')
+    return UPLOAD_PHOTO
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     photo_obj = update.message.photo[-1]
@@ -400,6 +421,36 @@ async def confirm_deposit_action(update: Update, context: ContextTypes.DEFAULT_T
         except: pass
     await query.edit_message_text("Enviado a admin.")
     await query.message.reply_text("Volviendo al menú...", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
+    return ConversationHandler.END
+
+async def withdraw_start(update, context):
+    balance = db.get_user_balance(update.effective_user.id)
+    if balance <= 0:
+        await update.message.reply_text("No tienes saldo.", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
+        return ConversationHandler.END
+    await update.message.reply_text(f"Saldo: ${balance}\n\nEscribe monto a retirar:")
+    return AMOUNT
+
+async def withdraw_handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = float(update.message.text)
+        if amount <= 0: raise ValueError
+    except ValueError:
+        await update.message.reply_text("Monto inválido.")
+        return AMOUNT
+
+    user_id = update.effective_user.id
+    if amount > db.get_user_balance(user_id):
+        await update.message.reply_text("Saldo insuficiente.", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
+        return ConversationHandler.END
+        
+    db.update_user_balance(user_id, -amount)
+    trans_id = db.create_transaction(user_id, 'WITHDRAW', amount)
+    msg = f"🔔 **RETIRO**\nUser ID: {user_id}\nMonto: ${amount}\nID: {trans_id}\n\nAprobar: /aprobar {trans_id} ok"
+    for admin_id in ADMIN_IDS:
+        try: await context.bot.send_message(chat_id=admin_id, text=msg, parse_mode='Markdown')
+        except: pass
+    await update.message.reply_text("Solicitud enviada.", reply_markup=InlineKeyboardMarkup(get_main_keyboard()))
     return ConversationHandler.END
 
 async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -485,28 +536,27 @@ def main():
     # Botones
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    # Conversaciones
+    # Conversación Apuestas
     bet_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern='^select_|^c_finish')],
         states={AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount)], CONFIRM_BET: [CallbackQueryHandler(handle_confirm)]},
-        fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)]
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado") or ConversationHandler.END)]
     )
     application.add_handler(bet_conv)
 
+    # Conversación Depósito
     dep_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler, pattern='^deposit_start$')],
+        entry_points=[CallbackQueryHandler(deposit_start, pattern='^deposit_start$')],
         states={UPLOAD_PHOTO: [MessageHandler(filters.PHOTO, handle_photo)], CONFIRM_DEPOSIT: [CallbackQueryHandler(confirm_deposit_action)]},
-        fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)]
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado") or ConversationHandler.END)]
     )
     application.add_handler(dep_conv)
     
-    async def wit_start(u, c):
-        if db.get_user_balance(u.effective_user.id) <= 0: await u.message.reply_text("Sin saldo.")
-        else: await u.message.reply_text("Monto a retirar:"); return AMOUNT
+    # Conversación Retiro (Corregida)
     wit_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(wit_start, pattern='^withdraw_start$')],
-        states={AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u,c: u.message.reply_text("Retiro solicitado.") or ConversationHandler.END)]},
-        fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)]
+        entry_points=[CallbackQueryHandler(withdraw_start, pattern='^withdraw_start$')],
+        states={AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_handle_amount)]},
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado") or ConversationHandler.END)]
     )
     application.add_handler(wit_conv)
 
@@ -514,14 +564,14 @@ def main():
     admin_edit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_edit_start_flow, pattern='^admin_edit_start$')],
         states={ADMIN_EDIT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_edit)]},
-        fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)]
+        fallbacks=[CommandHandler('cancel', lambda u,c: u.message.reply_text("Cancelado") or ConversationHandler.END)]
     )
     application.add_handler(admin_edit_conv)
 
-    # CRON
+    # CRON (2 Horas = 7200 segundos)
     job_queue = application.job_queue
     if job_queue:
-        job_queue.run_repeating(sync_events_job, interval=3600, first=10)
+        job_queue.run_repeating(sync_events_job, interval=7200, first=10)
         job_queue.run_repeating(auto_payouts_job, interval=600, first=60)
 
     # WEB
@@ -530,7 +580,7 @@ def main():
     loop = asyncio.get_event_loop()
     loop.create_task(run_web_server(web_app))
     
-    print("Bot listo con Odds-API y Panel Admin...")
+    print("Bot listo con Odds-API, Panel Admin y Sincronización de 2h...")
     application.run_polling()
 
 if __name__ == '__main__':
